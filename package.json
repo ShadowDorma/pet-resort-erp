@@ -1,0 +1,13 @@
+{
+  "name": "pet-resort",
+  "private": true,
+  "description": "Pet Resort: web + API en un solo servicio",
+  "scripts": {
+    "build": "npm ci --prefix frontend && npm run build --prefix frontend && node scripts/copy-frontend.js && npm ci --omit=dev --prefix backend",
+    "start": "npm start --prefix backend",
+    "seed": "npm run seed --prefix backend"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

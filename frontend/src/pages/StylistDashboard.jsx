@@ -5,7 +5,14 @@ import DateNavigator from '../components/DateNavigator';
 import PanelSkeleton from '../components/PanelSkeleton';
 import { asArray, requestErrorMessage, toDateInputValue } from '../lib/safeData';
 
-const inputClass = 'w-full rounded-xl border border-secondary-light px-3 py-2 text-sm text-primary-dark';
+const DONE_STATUSES = new Set(['COMPLETED', 'CANCELLED', 'FAILED', 'NO_SHOW']);
+
+const appointmentKey = (item) => String(item?.appointment_id || item?.booking_id || '');
+
+const isActiveAppointment = (item) => {
+  const status = String(item?.appointment_status || item?.booking_status || '').toUpperCase();
+  return !DONE_STATUSES.has(status);
+};
 
 const statusLabel = (status) => {
   const map = {
@@ -38,7 +45,7 @@ function StylistDashboard() {
       setAppointments(
         asArray(data?.appointments || data?.pets).filter((item) => {
           const type = String(item?.booking_type || 'APPOINTMENT').toUpperCase();
-          if (type !== 'APPOINTMENT') {
+          if (type !== 'APPOINTMENT' || !isActiveAppointment(item)) {
             return false;
           }
           return spaServices.test(item?.service_name || '') || !item?.service_name;
@@ -85,10 +92,22 @@ function StylistDashboard() {
         status,
         notes: extraNotes,
       });
-      setMessage('Estado del servicio actualizado');
+      if (DONE_STATUSES.has(String(status).toUpperCase())) {
+        const id = appointmentKey(appointment);
+        setAppointments((current) => asArray(current).filter((item) => appointmentKey(item) !== id));
+      }
+      setMessage(
+        String(status).toUpperCase() === 'COMPLETED'
+          ? 'Servicio marcado como completado'
+          : String(status).toUpperCase() === 'IN_PROGRESS'
+            ? 'Servicio en proceso'
+            : 'Cita cancelada / incidencia registrada'
+      );
       setActive(null);
       setNotes('');
-      await loadAppointments(selectedDate);
+      if (!DONE_STATUSES.has(String(status).toUpperCase())) {
+        await loadAppointments(selectedDate);
+      }
     } catch (err) {
       setError(requestErrorMessage(err, 'No se pudo actualizar el servicio'));
     } finally {
@@ -127,15 +146,15 @@ function StylistDashboard() {
       {error ? <p className="mb-4 rounded-2xl bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
       {message ? <p className="mb-4 rounded-2xl bg-accent-sage/60 px-3 py-2 text-sm text-primary-dark">{message}</p> : null}
 
-      {appointments.length === 0 ? (
+      {appointments.filter(isActiveAppointment).length === 0 ? (
         <div className="rounded-2xl border border-dashed border-secondary bg-white p-12 text-center">
           <Scissors className="mx-auto mb-3 text-primary" />
           <p className="text-primary-dark/70">No hay citas de baño, corte o spa para esta fecha.</p>
         </div>
       ) : (
         <div className="grid gap-5">
-          {appointments.map((item) => (
-            <article key={item?.appointment_id || item?.booking_id} className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-secondary-light">
+          {appointments.filter(isActiveAppointment).map((item) => (
+            <article key={appointmentKey(item)} className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-secondary-light">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <h2 className="text-xl font-semibold text-primary-dark">{item?.pet_name || 'Mascota'}</h2>

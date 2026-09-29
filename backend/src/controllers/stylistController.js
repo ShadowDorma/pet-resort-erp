@@ -49,7 +49,8 @@ const getMyAppointments = async (req, res) => {
         LEFT JOIN service_categories sc ON sc.category_id = sv.category_id
         LEFT JOIN spaces sp ON sp.space_id = a.space_id
         LEFT JOIN pet_care_instructions pci ON pci.pet_id = p.pet_id
-        WHERE b.status::text NOT IN ('CANCELLED', 'NO_SHOW')
+        WHERE b.status::text NOT IN ('CANCELLED', 'NO_SHOW', 'COMPLETED')
+          AND COALESCE(a.status::text, b.status::text) NOT IN ('CANCELLED', 'COMPLETED', 'FAILED')
           AND ${SPA_SERVICE_FILTER}
           AND (b.start_at AT TIME ZONE 'America/Bogota')::date =
             COALESCE($1::date, (timezone('America/Bogota', now()))::date)

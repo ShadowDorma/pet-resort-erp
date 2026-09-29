@@ -7,11 +7,36 @@ import { asArray, requestErrorMessage, toDateInputValue } from '../lib/safeData'
 
 const DONE_STATUSES = new Set(['COMPLETED', 'CANCELLED', 'FAILED', 'NO_SHOW']);
 
-const appointmentKey = (item) => String(item?.appointment_id || item?.booking_id || '');
+const inputClass =
+  'w-full rounded-xl border border-secondary-light px-3 py-2 text-sm text-primary-dark';
+
+const appointmentKey = (item) =>
+  String(item?.appointment_id || item?.id || item?.booking_id || '');
 
 const isActiveAppointment = (item) => {
-  const status = String(item?.appointment_status || item?.booking_status || '').toUpperCase();
+  if (!item) {
+    return false;
+  }
+  const status = String(item?.appointment_status || item?.booking_status || item?.status || '').toUpperCase();
   return !DONE_STATUSES.has(status);
+};
+
+const petName = (item) => item?.pet_name || item?.pet?.name || 'Mascota';
+const serviceName = (item) => item?.service_name || item?.service?.name || 'Servicio de estética';
+const ownerName = (item) =>
+  [item?.owner_first_name || item?.owner?.first_name, item?.owner_last_name || item?.owner?.last_name]
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+const formatWhen = (value) => {
+  if (!value) {
+    return 'Sin horario';
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return 'Sin horario';
+  }
+  return date.toLocaleString('es-CO');
 };
 
 const statusLabel = (status) => {
@@ -44,11 +69,12 @@ function StylistDashboard() {
       const spaServices = /baño|spa|corte/i;
       setAppointments(
         asArray(data?.appointments || data?.pets).filter((item) => {
-          const type = String(item?.booking_type || 'APPOINTMENT').toUpperCase();
+          const type = String(item?.booking_type || item?.service?.booking_type || 'APPOINTMENT').toUpperCase();
           if (type !== 'APPOINTMENT' || !isActiveAppointment(item)) {
             return false;
           }
-          return spaServices.test(item?.service_name || '') || !item?.service_name;
+          const label = item?.service_name || item?.service?.name || '';
+          return spaServices.test(label) || !label;
         })
       );
     } catch (err) {
@@ -80,21 +106,28 @@ function StylistDashboard() {
     };
   }, [selectedDate]);
 
-  const updateStatus = async (appointment, status, extraNotes = null) => {
-    if (!appointment?.appointment_id) {
+  const handleStatusChange = async (appointment, status, extraNotes = null) => {
+    const appointmentId = appointment?.appointment_id || appointment?.id;
+    if (!appointmentId) {
+      setError('No se pudo identificar la cita');
       return;
     }
     setSubmitting(true);
     setError('');
     setMessage('');
     try {
-      await api.put(`/stylist/appointments/${appointment.appointment_id}`, {
+      await api.put(`/stylist/appointments/${appointmentId}`, {
         status,
         notes: extraNotes,
       });
-      if (DONE_STATUSES.has(String(status).toUpperCase())) {
-        const id = appointmentKey(appointment);
-        setAppointments((current) => asArray(current).filter((item) => appointmentKey(item) !== id));
+      const done = DONE_STATUSES.has(String(status || '').toUpperCase());
+      if (done) {
+        const id = String(appointmentId);
+        setAppointments((prev) =>
+          (prev || []).filter((item) => appointmentKey(item) !== id && String(item?.id || '') !== id)
+        );
+      } else {
+        await loadAppointments(selectedDate);
       }
       setMessage(
         String(status).toUpperCase() === 'COMPLETED'
@@ -105,22 +138,19 @@ function StylistDashboard() {
       );
       setActive(null);
       setNotes('');
-      if (!DONE_STATUSES.has(String(status).toUpperCase())) {
-        await loadAppointments(selectedDate);
-      }
     } catch (err) {
-      setError(requestErrorMessage(err, 'No se pudo actualizar el servicio'));
+      setError(requestErrorMessage(err, 'No se pudo actualizar el servicio. Intenta de nuevo.'));
     } finally {
       setSubmitting(false);
     }
   };
 
   const handleConfirm = async (event) => {
-    event.preventDefault();
+    event?.preventDefault?.();
     if (!active) {
       return;
     }
-    await updateStatus(active, nextStatus, notes);
+    await handleStatusChange(active, nextStatus, notes);
   };
 
   if (loading) {
@@ -146,27 +176,28 @@ function StylistDashboard() {
       {error ? <p className="mb-4 rounded-2xl bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
       {message ? <p className="mb-4 rounded-2xl bg-accent-sage/60 px-3 py-2 text-sm text-primary-dark">{message}</p> : null}
 
-      {appointments.filter(isActiveAppointment).length === 0 ? (
+      {asArray(appointments).filter(isActiveAppointment).length === 0 ? (
         <div className="rounded-2xl border border-dashed border-secondary bg-white p-12 text-center">
           <Scissors className="mx-auto mb-3 text-primary" />
           <p className="text-primary-dark/70">No hay citas de baño, corte o spa para esta fecha.</p>
         </div>
       ) : (
         <div className="grid gap-5">
-          {appointments.filter(isActiveAppointment).map((item) => (
-            <article key={appointmentKey(item)} className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-secondary-light">
+          {asArray(appointments).filter(isActiveAppointment).map((item) => (
+            <article key={appointmentKey(item) || `cita-${item?.start_at}`} className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-secondary-light">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <h2 className="text-xl font-semibold text-primary-dark">{item?.pet_name || 'Mascota'}</h2>
-                  <p className="text-sm text-secondary">{item?.service_name || 'Servicio de estética'}</p>
+                  <h2 className="text-xl font-semibold text-primary-dark">{petName(item)}</h2>
+                  <p className="text-sm text-secondary">{serviceName(item)}</p>
                   <p className="text-xs text-primary-dark/60">
-                    {item?.owner_first_name} {item?.owner_last_name} ·{' '}
-                    {item?.start_at ? new Date(item.start_at).toLocaleString('es-CO') : 'Sin horario'}
-                    {item?.space_name ? ` · ${item.space_name}` : ''}
+                    {ownerName(item)}
+                    {ownerName(item) ? ' · ' : ''}
+                    {formatWhen(item?.start_at)}
+                    {item?.space_name || item?.space?.name ? ` · ${item?.space_name || item?.space?.name}` : ''}
                   </p>
                 </div>
                 <span className="rounded-full bg-primary-light px-3 py-1 text-xs font-semibold">
-                  {statusLabel(item?.appointment_status || item?.booking_status)}
+                  {statusLabel(item?.appointment_status || item?.booking_status || item?.status)}
                 </span>
               </div>
               <div className="mt-4 rounded-2xl bg-accent-sand/70 p-3 text-sm text-primary-dark">
@@ -174,14 +205,22 @@ function StylistDashboard() {
                   <Sparkles size={16} />
                   Preferencias y notas de cuidado
                 </p>
-                <p>{item?.owner_preferences || item?.special_care || item?.allergies || 'Sin preferencias registradas.'}</p>
-                {item?.medications ? <p className="mt-1 text-xs">Medicamentos: {item.medications}</p> : null}
+                <p>
+                  {item?.owner_preferences ||
+                    item?.special_care ||
+                    item?.allergies ||
+                    item?.pet?.allergies ||
+                    'Sin preferencias registradas.'}
+                </p>
+                {item?.medications || item?.pet?.medications ? (
+                  <p className="mt-1 text-xs">Medicamentos: {item?.medications || item?.pet?.medications}</p>
+                ) : null}
               </div>
               <div className="mt-4 flex flex-wrap gap-2">
                 <button
                   type="button"
                   disabled={submitting}
-                  onClick={() => updateStatus(item, 'IN_PROGRESS')}
+                  onClick={() => handleStatusChange(item, 'IN_PROGRESS')}
                   className="rounded-full bg-secondary px-3 py-2 text-sm font-medium text-white disabled:opacity-70"
                 >
                   {submitting ? 'Actualizando...' : 'En proceso'}
@@ -189,7 +228,7 @@ function StylistDashboard() {
                 <button
                   type="button"
                   onClick={() => {
-                    setActive(item);
+                    setActive(item || null);
                     setNextStatus('COMPLETED');
                     setNotes('');
                   }}
@@ -200,7 +239,7 @@ function StylistDashboard() {
                 <button
                   type="button"
                   onClick={() => {
-                    setActive(item);
+                    setActive(item || null);
                     setNextStatus('FAILED');
                     setNotes('');
                   }}

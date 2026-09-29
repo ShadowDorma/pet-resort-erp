@@ -11,8 +11,11 @@ const SPA_SERVICE_FILTER = `
   )
 `;
 
-const getMyAppointments = async (_req, res) => {
+const getMyAppointments = async (req, res) => {
   try {
+    const rawDate = String(req.query?.date || '').slice(0, 10);
+    const selectedDate = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : null;
+
     const result = await query(
       `
         SELECT
@@ -46,16 +49,20 @@ const getMyAppointments = async (_req, res) => {
         LEFT JOIN service_categories sc ON sc.category_id = sv.category_id
         LEFT JOIN spaces sp ON sp.space_id = a.space_id
         LEFT JOIN pet_care_instructions pci ON pci.pet_id = p.pet_id
-        WHERE b.status::text NOT IN ('CANCELLED', 'NO_SHOW', 'COMPLETED')
+        WHERE b.status::text NOT IN ('CANCELLED', 'NO_SHOW')
           AND ${SPA_SERVICE_FILTER}
+          AND (b.start_at AT TIME ZONE 'America/Bogota')::date =
+            COALESCE($1::date, (timezone('America/Bogota', now()))::date)
         ORDER BY b.start_at
-      `
+      `,
+      [selectedDate]
     );
 
-    return res.status(200).json({ appointments: result.rows, pets: result.rows });
+    const rows = result.rows || [];
+    return res.status(200).json({ appointments: rows, pets: rows, date: selectedDate });
   } catch (error) {
     console.error('Error en getMyAppointments:', error);
-    return res.status(500).json({ message: 'No se pudieron listar las citas del estilista' });
+    return res.status(500).json({ message: 'No se pudieron listar las citas del estilista', appointments: [], pets: [] });
   }
 };
 

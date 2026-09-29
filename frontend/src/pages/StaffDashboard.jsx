@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, ClipboardList, DoorOpen, LogIn, LogOut } from 'lucide-react';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
+import PanelSkeleton from '../components/PanelSkeleton';
+import { asArray, asObject, requestErrorMessage } from '../lib/safeData';
 
 const inputClass = 'w-full rounded-xl border border-secondary-light px-3 py-2 text-sm text-primary-dark';
 const IN_HOUSE = ['IN_HOUSE', 'CHECKED_IN', 'IN_PROGRESS'];
@@ -36,47 +38,68 @@ function StaffDashboard() {
   const [loading, setLoading] = useState(true);
 
   const loadReception = async () => {
-    const [agendaRes, occupancyRes, bookingsRes] = await Promise.all([
+    const [agendaRes, occupancyRes, bookingsRes] = await Promise.allSettled([
       api.get('/staff/today', { params: { all: 'true' } }),
       api.get('/staff/occupancy'),
       api.get('/bookings/admin/all'),
     ]);
+    const dataOf = (result) => (result.status === 'fulfilled' ? result.value?.data : null);
 
-    const fromAgenda = agendaRes.data.agenda || [];
-    const fromBookings = (bookingsRes.data.bookings || [])
-      .filter((booking) => !['COMPLETED', 'CANCELLED', 'NO_SHOW'].includes(booking.status))
+    const fromAgenda = asArray(dataOf(agendaRes)?.agenda);
+    const fromBookings = asArray(dataOf(bookingsRes)?.bookings)
+      .filter((booking) => !['COMPLETED', 'CANCELLED', 'NO_SHOW'].includes(booking?.status))
       .map((booking) => ({
         ...booking,
-        species: booking.pet_species || booking.species,
-        service_name: booking.service_name,
-        space_name: booking.space_name,
+        species: booking?.pet_species || booking?.species,
+        service_name: booking?.service_name,
+        space_name: booking?.space_name,
       }));
 
     const merged = [...fromAgenda, ...fromBookings].reduce((acc, item) => {
-      acc.set(String(item.booking_id), item);
+      if (item?.booking_id != null) {
+        acc.set(String(item.booking_id), item);
+      }
       return acc;
     }, new Map());
 
-    setAgenda([...merged.values()].sort((a, b) => new Date(a.start_at) - new Date(b.start_at)));
-    setOccupancy(occupancyRes.data);
+    setAgenda([...merged.values()].sort((a, b) => new Date(a?.start_at || 0) - new Date(b?.start_at || 0)));
+    const occupancyData = asObject(dataOf(occupancyRes), { occupied: 0, available: 0, total: 0, spaces: [] });
+    setOccupancy({
+      occupied: Number(occupancyData?.occupied) || 0,
+      available: Number(occupancyData?.available) || 0,
+      total: Number(occupancyData?.total) || 0,
+      spaces: asArray(occupancyData?.spaces),
+    });
   };
 
   const loadCare = async () => {
-    const { data } = await api.get('/staff/care', {
-      params: {
-        assigned: assignedOnly ? 'true' : 'false',
-        all: showAllActive ? 'true' : 'false',
-      },
-    });
-    setBoard(data.board || []);
+    try {
+      const { data } = await api.get('/staff/care', {
+        params: {
+          assigned: assignedOnly ? 'true' : 'false',
+          all: showAllActive ? 'true' : 'false',
+        },
+      });
+      setBoard(asArray(data?.board));
+    } catch (error) {
+      setBoard([]);
+      throw error;
+    }
   };
 
   const loadAll = async () => {
     setError('');
+    setLoading(true);
     try {
-      await Promise.all([loadReception(), loadCare()]);
+      const results = await Promise.allSettled([loadReception(), loadCare()]);
+      const failed = results.find((item) => item.status === 'rejected');
+      if (failed) {
+        setError(requestErrorMessage(failed.reason, 'No se pudo cargar el panel operativo'));
+      }
     } catch (err) {
-      setError(err.response?.data?.message || 'No se pudo cargar el panel operativo');
+      setAgenda([]);
+      setBoard([]);
+      setError(requestErrorMessage(err, 'No se pudo cargar el panel operativo'));
     } finally {
       setLoading(false);
     }
@@ -131,7 +154,12 @@ function StaffDashboard() {
   );
 
   if (loading) {
-    return <p className="text-primary-dark">Cargando panel operativo...</p>;
+    return (
+      <section>
+        <h1 className="mb-4 text-3xl font-semibold text-primary-dark">Agenda Staff</h1>
+        <PanelSkeleton label="Cargando panel operativo..." />
+      </section>
+    );
   }
 
   return (

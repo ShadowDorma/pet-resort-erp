@@ -166,7 +166,7 @@ const petList = (space) => {
 function OperationalCard({ icon: Icon, title, used, max, pets, hint, gallery = [] }) {
   const occupied = used > 0;
   const full = used >= max;
-  const percent = Math.round((Math.min(used, max) / max) * 100);
+  const percent = max > 0 ? Math.round((Math.min(used, max) / max) * 100) : 0;
   const [photo, setPhoto] = useState(0);
   const cover = gallery[photo] || gallery[0];
 
@@ -238,7 +238,22 @@ function OperationalCard({ icon: Icon, title, used, max, pets, hint, gallery = [
 }
 
 function LiveAvailability({ spaces = [], title = 'Disponibilidad en tiempo real' }) {
-  const live = splitLiveSpaces(spaces);
+  const live = (() => {
+    try {
+      return splitLiveSpaces(spaces);
+    } catch {
+      return {
+        dogs: [],
+        cats: [],
+        recreation: null,
+        recreationCat: null,
+        spa: null,
+        occupiedLodging: 0,
+        occupancyPercentage: 0,
+        freeLodging: LODGING_CAPACITY,
+      };
+    }
+  })();
   const recreationPets = petList(live.recreation).slice(0, RECREATION_CAP);
   const recreationCatPets = petList(live.recreationCat).slice(0, RECREATION_CAP);
   const spaPets = petList(live.spa).slice(0, SPA_CAP);

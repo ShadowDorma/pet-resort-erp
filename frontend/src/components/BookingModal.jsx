@@ -70,16 +70,25 @@ function BookingModal({ open, clients = [], occupancySpaces = [], onClose, onCre
   const selectedService = services.find((item) => String(item.service_id) === String(form.service_id));
   const flow = serviceFlow(selectedService);
 
-  const spaces = occupancySpaces.filter((space) => String(space.status || 'AVAILABLE') !== 'INACTIVE');
-  const spaStation = spaces.find(
-    (space) =>
-      ['SPA', 'MULTIPURPOSE'].includes(String(space.space_type || '').toUpperCase()) ||
-      /spa|groom|est[eé]tica|cabina/i.test(space.name || '')
+  const spaces = useMemo(
+    () => occupancySpaces.filter((space) => String(space.status || 'AVAILABLE') !== 'INACTIVE'),
+    [occupancySpaces]
   );
+  const spaStation = useMemo(
+    () =>
+      spaces.find(
+        (space) =>
+          ['SPA', 'MULTIPURPOSE'].includes(String(space.space_type || '').toUpperCase()) ||
+          /spa|groom|est[eé]tica|cabina/i.test(space.name || '')
+      ),
+    [spaces]
+  );
+  const petSpecies = pet?.species || '';
+  const spaStationId = spaStation?.space_id != null ? String(spaStation.space_id) : '';
 
   const filteredSpaces = useMemo(() => {
     if (flow === 'lodging') {
-      const cat = isCatSpecies(pet?.species);
+      const cat = isCatSpecies(petSpecies);
       const suites = spaces.filter((space) => {
         const type = String(space.space_type || '').toUpperCase();
         const name = String(space.name || '');
@@ -94,22 +103,27 @@ function BookingModal({ open, clients = [], occupancySpaces = [], onClose, onCre
       const patios = spaces.filter((space) => String(space.space_type || '').toUpperCase() === 'RECREATION');
       const bySpecies = patios.filter((space) => {
         const name = String(space.name || '').toLowerCase();
-        return isCatSpecies(pet?.species) ? /felin|gat/.test(name) : /canin|perro|dog/.test(name) || !/felin|gat/.test(name);
+        return isCatSpecies(petSpecies) ? /felin|gat/.test(name) : /canin|perro|dog/.test(name) || !/felin|gat/.test(name);
       });
       return (bySpecies.length ? bySpecies : patios).filter((space) => Number(space.occupied_count || 0) < Number(space.capacity || 3));
     }
     return spaStation ? [spaStation] : [];
-  }, [flow, pet, spaStation, spaces]);
+  }, [flow, petSpecies, spaStation, spaces]);
+
+  const autoSpaceId = flow === 'spa' && spaStationId
+    ? spaStationId
+    : filteredSpaces.length === 1
+      ? String(filteredSpaces[0].space_id)
+      : '';
 
   useEffect(() => {
-    if (flow === 'spa' && spaStation) {
-      setForm((current) => ({ ...current, space_id: String(spaStation.space_id) }));
+    if (!open || !autoSpaceId) {
       return;
     }
-    if (filteredSpaces.length === 1) {
-      setForm((current) => ({ ...current, space_id: String(filteredSpaces[0].space_id) }));
-    }
-  }, [filteredSpaces, flow, spaStation]);
+    setForm((current) =>
+      String(current.space_id) === autoSpaceId ? current : { ...current, space_id: autoSpaceId }
+    );
+  }, [open, autoSpaceId]);
 
   const handleSubmit = async (event) => {
     event.preventDefault();

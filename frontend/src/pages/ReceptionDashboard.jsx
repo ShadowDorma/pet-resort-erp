@@ -18,6 +18,8 @@ import api from '../api/axios';
 import { overlayLodgingOccupancy, splitLiveSpaces, SuiteMapDrawer, LODGING_CAPACITY, RECREATION_CAP, SPA_CAP } from '../components/LiveAvailability';
 import BookingModal from '../components/BookingModal';
 import { PetPhoto } from '../components/PetPhoto';
+import PanelSkeleton from '../components/PanelSkeleton';
+import { asArray, asObject, requestErrorMessage } from '../lib/safeData';
 
 const inputClass = 'w-full rounded-xl border border-secondary-light px-3 py-2 text-sm text-primary-dark outline-none focus:border-primary';
 const IN_HOUSE = ['IN_HOUSE', 'CHECKED_IN', 'IN_PROGRESS'];
@@ -159,9 +161,12 @@ const petFromBooking = (booking) => ({
 });
 
 function ReceptionPetCard({ booking, badge, onOpen, children }) {
+  if (!booking) {
+    return null;
+  }
   return (
     <article className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-secondary-light">
-      <button type="button" onClick={() => onOpen(booking)} className="flex w-full items-start gap-4 text-left">
+      <button type="button" onClick={() => onOpen?.(booking)} className="flex w-full items-start gap-4 text-left">
         <div className="h-20 w-20 shrink-0 overflow-hidden rounded-2xl">
           <PetPhoto pet={petFromBooking(booking)} className="h-20" rounded="rounded-2xl" />
         </div>
@@ -169,13 +174,13 @@ function ReceptionPetCard({ booking, badge, onOpen, children }) {
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
               <p className="text-xs uppercase tracking-wide text-secondary">{badge}</p>
-              <h2 className="text-lg font-semibold text-primary-dark">{booking.pet_name}</h2>
+              <h2 className="text-lg font-semibold text-primary-dark">{booking?.pet_name || 'Mascota'}</h2>
               <p className="text-sm text-secondary">
-                {booking.species || booking.pet_species || 'Especie N/D'} · {booking.breed || 'Raza N/D'} · {ageLabel(booking)}
+                {booking?.species || booking?.pet_species || 'Especie N/D'} · {booking?.breed || 'Raza N/D'} · {ageLabel(booking)}
               </p>
             </div>
-            <span className={`rounded-full px-3 py-1 text-xs font-semibold ${statusTone(booking.status)}`}>
-              {statusLabel(booking.status)}
+            <span className={`rounded-full px-3 py-1 text-xs font-semibold ${statusTone(booking?.status)}`}>
+              {statusLabel(booking?.status)}
             </span>
           </div>
           <p className="mt-1 text-xs text-primary-dark/70 line-clamp-2">{careNotes(booking)}</p>
@@ -224,35 +229,45 @@ function ReceptionDashboard() {
   const [suiteDrawerOpen, setSuiteDrawerOpen] = useState(false);
 
   const loadAll = async () => {
-    const settled = await Promise.allSettled([
-      api.get('/bookings/admin/all'),
-      api.get('/staff/occupancy'),
-      api.get('/reception/staff'),
-      api.get('/reception/directory'),
-    ]);
+    try {
+      const settled = await Promise.allSettled([
+        api.get('/bookings/admin/all'),
+        api.get('/staff/occupancy'),
+        api.get('/reception/staff'),
+        api.get('/reception/directory'),
+      ]);
 
-    const value = (index) => (settled[index].status === 'fulfilled' ? settled[index].value.data : null);
-    const bookingsData = value(0);
-    const occupancyData = value(1);
-    const staffData = value(2);
-    const directoryData = value(3);
+      const value = (index) => (settled[index].status === 'fulfilled' ? settled[index].value?.data : null);
+      const bookingsData = value(0);
+      const occupancyData = asObject(value(1), { occupied: 0, available: 0, total: 0, spaces: [] });
+      const staffData = value(2);
+      const directoryData = value(3);
 
-    if (bookingsData?.bookings) {
-      setBookings([...bookingsData.bookings].sort((a, b) => new Date(a.start_at) - new Date(b.start_at)));
-    }
-    if (occupancyData?.spaces) {
-      setOccupancy(occupancyData);
-    }
-    if (staffData?.staff) {
-      setStaff(staffData.staff);
-    }
-    if (directoryData?.clients) {
-      setClients(directoryData.clients);
-    }
+      const nextBookings = asArray(bookingsData?.bookings).sort(
+        (a, b) => new Date(a?.start_at || 0) - new Date(b?.start_at || 0)
+      );
+      setBookings(nextBookings);
+      setOccupancy({
+        occupied: Number(occupancyData?.occupied) || 0,
+        available: Number(occupancyData?.available) || 0,
+        total: Number(occupancyData?.total) || 0,
+        spaces: asArray(occupancyData?.spaces),
+      });
+      setStaff(asArray(staffData?.staff));
+      setClients(asArray(directoryData?.clients));
 
-    const failed = settled.find((item) => item.status === 'rejected');
-    if (failed) {
-      setError(failed.reason?.response?.data?.message || 'Algunos datos de recepción no se pudieron cargar');
+      const failed = settled.find((item) => item.status === 'rejected');
+      if (failed) {
+        setError(requestErrorMessage(failed.reason, 'Algunos datos de recepción no se pudieron cargar'));
+      } else {
+        setError('');
+      }
+    } catch (err) {
+      setBookings([]);
+      setOccupancy({ occupied: 0, available: 0, total: 0, spaces: [] });
+      setStaff([]);
+      setClients([]);
+      setError(requestErrorMessage(err, 'No se pudo cargar el panel de recepción'));
     }
   };
 
@@ -262,7 +277,7 @@ function ReceptionDashboard() {
     loadAll()
       .catch((err) => {
         if (!cancelled) {
-          setError(err.response?.data?.message || 'No se pudo cargar el panel de recepción');
+          setError(requestErrorMessage(err, 'No se pudo cargar el panel de recepción'));
         }
       })
       .finally(() => {
@@ -295,7 +310,7 @@ function ReceptionDashboard() {
           },
         });
         if (active) {
-          setAvailability(data.availability);
+          setAvailability(data?.availability || null);
         }
       } catch {
         if (active) {
@@ -330,7 +345,7 @@ function ReceptionDashboard() {
           },
         });
         if (active) {
-          setScheduleAvailability(data.availability);
+          setScheduleAvailability(data?.availability || null);
         }
       } catch {
         if (active) {
@@ -346,26 +361,26 @@ function ReceptionDashboard() {
 
   const expectedToday = useMemo(
     () =>
-      bookings.filter(
+      asArray(bookings).filter(
         (booking) =>
-          (isSameDay(booking.start_at) || isSameDay(booking.end_at)) &&
-          !IN_HOUSE.includes(booking.status) &&
-          !['COMPLETED', 'CANCELLED', 'NO_SHOW'].includes(booking.status)
+          (isSameDay(booking?.start_at) || isSameDay(booking?.end_at)) &&
+          !IN_HOUSE.includes(booking?.status) &&
+          !['COMPLETED', 'CANCELLED', 'NO_SHOW'].includes(booking?.status)
       ),
     [bookings]
   );
 
   const inHouse = useMemo(
-    () => bookings.filter((booking) => IN_HOUSE.includes(booking.status)),
+    () => asArray(bookings).filter((booking) => IN_HOUSE.includes(booking?.status)),
     [bookings]
   );
 
   const departuresToday = useMemo(
     () =>
-      bookings.filter(
+      asArray(bookings).filter(
         (booking) =>
-          isSameDay(booking.end_at) &&
-          !['COMPLETED', 'CANCELLED', 'NO_SHOW'].includes(booking.status)
+          isSameDay(booking?.end_at) &&
+          !['COMPLETED', 'CANCELLED', 'NO_SHOW'].includes(booking?.status)
       ),
     [bookings]
   );
@@ -396,24 +411,24 @@ function ReceptionDashboard() {
   }, [expectedToday, inHouse, query]);
 
   const filteredBookings = useMemo(() => {
-    return bookings.filter((booking) => {
+    return asArray(bookings).filter((booking) => {
       if (bookingFilter === 'ALL') {
         return true;
       }
       if (bookingFilter === 'IN_HOUSE') {
-        return IN_HOUSE.includes(booking.status);
+        return IN_HOUSE.includes(booking?.status);
       }
-      return booking.status === bookingFilter;
+      return booking?.status === bookingFilter;
     }).filter((booking) => {
       if (historyFrom) {
         const start = new Date(`${historyFrom}T00:00:00`);
-        if (new Date(booking.start_at) < start) {
+        if (new Date(booking?.start_at) < start) {
           return false;
         }
       }
       if (historyTo) {
         const end = new Date(`${historyTo}T23:59:59`);
-        if (new Date(booking.start_at) > end) {
+        if (new Date(booking?.start_at) > end) {
           return false;
         }
       }
@@ -422,11 +437,11 @@ function ReceptionDashboard() {
         return true;
       }
       return [
-        booking.pet_name,
-        booking.owner_first_name,
-        booking.owner_last_name,
-        booking.service_name,
-        booking.space_name,
+        booking?.pet_name,
+        booking?.owner_first_name,
+        booking?.owner_last_name,
+        booking?.service_name,
+        booking?.space_name,
       ]
         .filter(Boolean)
         .join(' ')
@@ -437,12 +452,13 @@ function ReceptionDashboard() {
 
   const filteredClients = useMemo(() => {
     const term = directoryQuery.trim().toLowerCase();
+    const list = asArray(clients);
     if (!term) {
-      return clients;
+      return list;
     }
-    return clients.filter((client) => {
-      const petNames = (client.pets || []).map((pet) => pet.name).join(' ');
-      return [client.first_name, client.last_name, client.phone, client.email, petNames]
+    return list.filter((client) => {
+      const petNames = asArray(client?.pets).map((pet) => pet?.name).join(' ');
+      return [client?.first_name, client?.last_name, client?.phone, client?.email, petNames]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
@@ -450,11 +466,27 @@ function ReceptionDashboard() {
     });
   }, [clients, directoryQuery]);
 
-  const occupiedSpaces = useMemo(
-    () => overlayLodgingOccupancy(occupancy.spaces || [], inHouse),
-    [occupancy.spaces, inHouse]
-  );
-  const liveSpaces = useMemo(() => splitLiveSpaces(occupiedSpaces), [occupiedSpaces]);
+  const occupiedSpaces = useMemo(() => {
+    try {
+      return overlayLodgingOccupancy(asArray(occupancy?.spaces), asArray(inHouse));
+    } catch {
+      return [];
+    }
+  }, [occupancy, inHouse]);
+  const liveSpaces = useMemo(() => {
+    try {
+      return splitLiveSpaces(occupiedSpaces);
+    } catch {
+      return {
+        occupiedLodging: 0,
+        occupancyPercentage: 0,
+        freeLodging: LODGING_CAPACITY,
+        recreation: null,
+        recreationCat: null,
+        spa: null,
+      };
+    }
+  }, [occupiedSpaces]);
   const recreationUsed = Number(liveSpaces.recreation?.occupied_count || 0);
   const recreationCatUsed = Number(liveSpaces.recreationCat?.occupied_count || 0);
   const spaUsed = Number(liveSpaces.spa?.occupied_count || 0);
@@ -516,7 +548,7 @@ function ReceptionDashboard() {
       setCheckInSpace('');
       await loadAll();
     } catch (err) {
-      setError(err.response?.data?.message || 'No se pudo registrar el check-in');
+      setError(requestErrorMessage(err, 'No se pudo registrar el check-in'));
     } finally {
       setSubmitting(false);
     }
@@ -680,7 +712,12 @@ function ReceptionDashboard() {
   ];
 
   if (loading) {
-    return <p className="text-primary-dark">Cargando recepción...</p>;
+    return (
+      <section className="min-w-0">
+        <h1 className="mb-4 text-3xl font-semibold text-primary-dark">Recepción</h1>
+        <PanelSkeleton label="Cargando recepción..." />
+      </section>
+    );
   }
 
   return (
@@ -747,7 +784,7 @@ function ReceptionDashboard() {
             {Math.min(spaUsed, SPA_CAP)}/{SPA_CAP}
           </p>
           <p className="text-xs text-primary-dark/60">
-            {Math.round((Math.min(spaUsed, SPA_CAP) / SPA_CAP) * 100)}% ocupación
+            {SPA_CAP > 0 ? Math.round((Math.min(spaUsed, SPA_CAP) / SPA_CAP) * 100) : 0}% ocupación
             {spaPets.length > 0 ? ` · ${spaPets.join(', ')}` : ''}
           </p>
         </article>
@@ -914,9 +951,9 @@ function ReceptionDashboard() {
             </div>
             {availability ? (
               <p className="text-sm text-primary-dark/70">
-                Perros {availability.lodging.dogs.available}/5 · Gatos {availability.lodging.cats.available}/5 · Patio canino{' '}
-                {availability.recreation.dogs?.available ?? availability.recreation.available}/{availability.recreation.dogs?.limit ?? 3} · Patio felino{' '}
-                {availability.recreation.cats?.available ?? 0}/{availability.recreation.cats?.limit ?? 3} · Spa {availability.spa.available}/{availability.spa.limit}
+                Perros {availability?.lodging?.dogs?.available ?? 0}/5 · Gatos {availability?.lodging?.cats?.available ?? 0}/5 · Patio canino{' '}
+                {availability?.recreation?.dogs?.available ?? availability?.recreation?.available ?? 0}/{availability?.recreation?.dogs?.limit ?? 3} · Patio felino{' '}
+                {availability?.recreation?.cats?.available ?? 0}/{availability?.recreation?.cats?.limit ?? 3} · Spa {availability?.spa?.available ?? 0}/{availability?.spa?.limit ?? 1}
               </p>
             ) : null}
           </div>
@@ -1166,19 +1203,19 @@ function ReceptionDashboard() {
             </label>
             {scheduleAvailability ? (
               <p className="mt-3 rounded-xl bg-accent-sage/60 px-3 py-2 text-xs">
-                {scheduleTarget.booking_type === 'RECREATION'
+                {scheduleTarget?.booking_type === 'RECREATION'
                   ? `Cupos en el patio: ${
-                      (isCatSpecies(scheduleTarget.pet_species || scheduleTarget.species)
-                        ? scheduleAvailability.recreation.cats?.available
-                        : scheduleAvailability.recreation.dogs?.available) ?? scheduleAvailability.recreation.available
+                      (isCatSpecies(scheduleTarget?.pet_species || scheduleTarget?.species)
+                        ? scheduleAvailability?.recreation?.cats?.available
+                        : scheduleAvailability?.recreation?.dogs?.available) ?? scheduleAvailability?.recreation?.available ?? 0
                     }/${
-                      (isCatSpecies(scheduleTarget.pet_species || scheduleTarget.species)
-                        ? scheduleAvailability.recreation.cats?.limit
-                        : scheduleAvailability.recreation.dogs?.limit) ?? 3
+                      (isCatSpecies(scheduleTarget?.pet_species || scheduleTarget?.species)
+                        ? scheduleAvailability?.recreation?.cats?.limit
+                        : scheduleAvailability?.recreation?.dogs?.limit) ?? 3
                     }`
-                  : scheduleTarget.booking_type === 'LODGING'
-                    ? `Cupos disponibles Perros: ${scheduleAvailability.lodging.dogs.available}/5 | Cupos disponibles Gatos: ${scheduleAvailability.lodging.cats.available}/5`
-                    : `Estética: ${scheduleAvailability.spa.available}/${scheduleAvailability.spa.limit}`}
+                  : scheduleTarget?.booking_type === 'LODGING'
+                    ? `Cupos disponibles Perros: ${scheduleAvailability?.lodging?.dogs?.available ?? 0}/5 | Cupos disponibles Gatos: ${scheduleAvailability?.lodging?.cats?.available ?? 0}/5`
+                    : `Estética: ${scheduleAvailability?.spa?.available ?? 0}/${scheduleAvailability?.spa?.limit ?? 1}`}
               </p>
             ) : null}
             <div className="mt-4 flex gap-2">
@@ -1192,15 +1229,15 @@ function ReceptionDashboard() {
                   || (
                     scheduleAvailability
                     && (
-                      (scheduleTarget.booking_type === 'LODGING'
-                        && (isCatSpecies(scheduleTarget.pet_species || scheduleTarget.species)
-                          ? scheduleAvailability.lodging.cats.available <= 0
-                          : scheduleAvailability.lodging.dogs.available <= 0))
-                      || (scheduleTarget.booking_type === 'RECREATION'
-                        && ((isCatSpecies(scheduleTarget.pet_species || scheduleTarget.species)
-                          ? scheduleAvailability.recreation.cats?.available
-                          : scheduleAvailability.recreation.dogs?.available) ?? scheduleAvailability.recreation.available) <= 0)
-                      || (scheduleTarget.booking_type === 'APPOINTMENT' && scheduleAvailability.spa.available <= 0)
+                      (scheduleTarget?.booking_type === 'LODGING'
+                        && (isCatSpecies(scheduleTarget?.pet_species || scheduleTarget?.species)
+                          ? (scheduleAvailability?.lodging?.cats?.available ?? 1) <= 0
+                          : (scheduleAvailability?.lodging?.dogs?.available ?? 1) <= 0))
+                      || (scheduleTarget?.booking_type === 'RECREATION'
+                        && ((isCatSpecies(scheduleTarget?.pet_species || scheduleTarget?.species)
+                          ? scheduleAvailability?.recreation?.cats?.available
+                          : scheduleAvailability?.recreation?.dogs?.available) ?? scheduleAvailability?.recreation?.available ?? 1) <= 0)
+                      || (scheduleTarget?.booking_type === 'APPOINTMENT' && (scheduleAvailability?.spa?.available ?? 1) <= 0)
                     )
                   )
                 }

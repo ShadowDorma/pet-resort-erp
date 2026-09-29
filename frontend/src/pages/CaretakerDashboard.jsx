@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Camera, ClipboardList, PawPrint, Plus } from 'lucide-react';
 import api from '../api/axios';
+import DateNavigator from '../components/DateNavigator';
+import PanelSkeleton from '../components/PanelSkeleton';
+import { asArray, isSameCalendarDay, requestErrorMessage, toDateInputValue } from '../lib/safeData';
 
 const inputClass = 'w-full rounded-xl border border-secondary-light px-3 py-2 text-sm text-primary-dark';
 
@@ -16,14 +19,7 @@ const CARETAKER_TYPES = new Set(['LODGING', 'RECREATION']);
 
 const logLabel = (type) => LOG_OPTIONS.find((item) => item.value === type)?.label || type;
 
-const isToday = (value) => {
-  if (!value) {
-    return false;
-  }
-  return new Date(value).toDateString() === new Date().toDateString();
-};
-
-const isInHouse = (pet) => IN_HOUSE.includes(String(pet.status || '').toUpperCase()) || pet.board_section === 'IN_HOUSE';
+const isInHouse = (pet) => IN_HOUSE.includes(String(pet?.status || '').toUpperCase()) || pet?.board_section === 'IN_HOUSE';
 
 const statusBadge = (pet) => {
   if (isInHouse(pet)) {
@@ -57,24 +53,24 @@ const fileToPreview = (file) =>
     reader.readAsDataURL(file);
   });
 
-function PetBoardCard({ pet, onAddLog }) {
-  const todayLogs = (pet.logs || []).filter((log) => isToday(log.created_at));
+function PetBoardCard({ pet, onAddLog, selectedDate }) {
+  const todayLogs = asArray(pet?.logs).filter((log) => isSameCalendarDay(log?.created_at, selectedDate));
   const badge = statusBadge(pet);
 
   return (
     <article className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-secondary-light">
       <div className="mb-3 flex items-start justify-between gap-2">
         <div>
-          <h2 className="text-xl font-semibold text-primary-dark">{pet.pet_name}</h2>
+          <h2 className="text-xl font-semibold text-primary-dark">{pet?.pet_name || 'Mascota'}</h2>
           <p className="text-sm text-secondary">
-            {pet.species} · {pet.breed || 'Raza N/D'}
+            {pet?.species} · {pet?.breed || 'Raza N/D'}
           </p>
           <p className="text-xs text-primary-dark/60">
-            {pet.owner_first_name} {pet.owner_last_name}
+            {pet?.owner_first_name} {pet?.owner_last_name}
           </p>
           <p className="text-xs text-primary-dark/60">
-            {pet.service_name || (pet.booking_type === 'RECREATION' ? 'Día de Guardería' : 'Hospedaje')}
-            {pet.space_name ? ` · ${pet.space_name}` : pet.destination_kind ? ` · ${pet.destination_kind}` : ''}
+            {pet?.service_name || (pet?.booking_type === 'RECREATION' ? 'Día de Guardería' : 'Hospedaje')}
+            {pet?.space_name ? ` · ${pet.space_name}` : pet?.destination_kind ? ` · ${pet.destination_kind}` : ''}
           </p>
         </div>
         <span className={`rounded-full px-3 py-1 text-xs font-semibold ${badge.className}`}>{badge.label}</span>
@@ -86,10 +82,10 @@ function PetBoardCard({ pet, onAddLog }) {
       ) : null}
       <h3 className="mb-2 inline-flex items-center gap-2 text-sm font-semibold text-primary-dark">
         <ClipboardList size={16} />
-        Bitácora de hoy
+        Bitácora del día
       </h3>
       {todayLogs.length === 0 ? (
-        <p className="text-sm text-primary-dark/60">Aún no hay registros hoy.</p>
+        <p className="text-sm text-primary-dark/60">Aún no hay registros en esta fecha.</p>
       ) : (
         <ul className="mb-3 space-y-2">
           {todayLogs.map((log) => (
@@ -122,31 +118,47 @@ function CaretakerDashboard() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(true);
+  const [selectedDate, setSelectedDate] = useState(toDateInputValue());
   const [activePet, setActivePet] = useState(null);
   const [logType, setLogType] = useState('FEEDING');
   const [description, setDescription] = useState('');
   const [photoUrl, setPhotoUrl] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  const loadPets = async () => {
-    const { data } = await api.get('/caretaker/pets');
-    setPets(
-      (data.pets || []).filter((pet) => CARETAKER_TYPES.has(String(pet.booking_type || '').toUpperCase()))
-    );
+  const loadPets = async (date = selectedDate) => {
+    try {
+      const { data } = await api.get('/caretaker/pets', { params: { date } });
+      setPets(
+        asArray(data?.pets).filter((pet) => CARETAKER_TYPES.has(String(pet?.booking_type || '').toUpperCase()))
+      );
+    } catch (err) {
+      setPets([]);
+      throw err;
+    }
   };
 
   useEffect(() => {
+    let cancelled = false;
     const run = async () => {
+      setLoading(true);
+      setError('');
       try {
-        await loadPets();
+        await loadPets(selectedDate);
       } catch (err) {
-        setError(err.response?.data?.message || 'No se pudieron cargar las mascotas hospedadas');
+        if (!cancelled) {
+          setError(requestErrorMessage(err, 'No se pudieron cargar las mascotas hospedadas'));
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+        }
       }
     };
     run();
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDate]);
 
   const inHousePets = useMemo(() => pets.filter((pet) => isInHouse(pet)), [pets]);
   const arrivalPets = useMemo(() => pets.filter((pet) => !isInHouse(pet)), [pets]);
@@ -177,9 +189,9 @@ function CaretakerDashboard() {
       setDescription('');
       setPhotoUrl('');
       setActivePet(null);
-      await loadPets();
+      await loadPets(selectedDate);
     } catch (err) {
-      setError(err.response?.data?.message || 'No se pudo registrar la bitácora');
+      setError(requestErrorMessage(err, 'No se pudo registrar la bitácora'));
     } finally {
       setSubmitting(false);
     }
@@ -204,15 +216,23 @@ function CaretakerDashboard() {
   };
 
   if (loading) {
-    return <p className="text-primary-dark">Cargando cuidados...</p>;
+    return (
+      <section>
+        <h1 className="mb-4 text-3xl font-semibold text-primary-dark">Cuidados en casa</h1>
+        <PanelSkeleton label="Cargando cuidados..." />
+      </section>
+    );
   }
 
   return (
     <section>
-      <div className="mb-6">
-        <p className="text-sm font-medium uppercase tracking-wide text-secondary">Operación</p>
-        <h1 className="text-3xl font-semibold text-primary-dark">Cuidados en casa</h1>
-        <p className="text-sm text-primary-dark/70">Hospedaje y guardería asignados a Carlos. El spa queda en estética.</p>
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium uppercase tracking-wide text-secondary">Operación</p>
+          <h1 className="text-3xl font-semibold text-primary-dark">Cuidados en casa</h1>
+          <p className="text-sm text-primary-dark/70">Hospedaje y guardería. Elige una fecha para ver la programación.</p>
+        </div>
+        <DateNavigator value={selectedDate} onChange={setSelectedDate} label="Ver programación" />
       </div>
 
       <div className="mb-5 flex flex-wrap gap-2">
@@ -232,7 +252,7 @@ function CaretakerDashboard() {
             tab === 'arrivals' ? 'bg-primary text-white' : 'bg-white text-primary-dark ring-1 ring-secondary-light'
           }`}
         >
-          Llegadas programadas hoy ({arrivalPets.length})
+          Llegadas programadas ({arrivalPets.length})
         </button>
       </div>
 
@@ -244,16 +264,17 @@ function CaretakerDashboard() {
           <PawPrint className="mx-auto mb-3 text-primary" />
           <p className="text-primary-dark/70">
             {tab === 'arrivals'
-              ? 'No hay llegadas de hospedaje o guardería programadas para hoy.'
-              : 'No hay mascotas en sitio de hospedaje o guardería en este momento.'}
+              ? 'No hay llegadas de hospedaje o guardería programadas para esta fecha.'
+              : 'No hay mascotas en sitio de hospedaje o guardería en esta fecha.'}
           </p>
         </div>
       ) : (
         <div className="grid gap-5 md:grid-cols-2">
           {visiblePets.map((pet) => (
             <PetBoardCard
-              key={pet.booking_id}
+              key={pet.booking_id || pet.pet_id}
               pet={pet}
+              selectedDate={selectedDate}
               onAddLog={(item) => {
                 setActivePet(item);
                 setLogType('FEEDING');

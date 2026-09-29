@@ -24,13 +24,15 @@ const LOG_TYPE_SQL = `
 `;
 
 const CARETAKER_BOOKING_TYPES = ['LODGING', 'RECREATION'];
-const ARRIVAL_STATUSES = ['CONFIRMED', 'PENDING'];
 const BUSINESS_TZ = 'America/Bogota'; // panel operativo en hora Colombia
 
 
 
-const getHousedPets = async (_req, res) => {
+const getHousedPets = async (req, res) => {
   try {
+    const rawDate = String(req.query?.date || '').slice(0, 10);
+    const selectedDate = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : null;
+
     const result = await query(
       `
         SELECT
@@ -75,49 +77,49 @@ const getHousedPets = async (_req, res) => {
         LEFT JOIN spaces sp_r ON sp_r.space_id = rs.space_id
         LEFT JOIN pet_care_instructions pci ON pci.pet_id = p.pet_id
         WHERE b.booking_type::text = ANY($2::text[])
-          AND b.status::text NOT IN ('CANCELLED', 'NO_SHOW', 'COMPLETED')
-          AND (
-            b.status::text = ANY($1::text[])
-            OR (
-              b.status::text = ANY($3::text[])
-              AND daterange(
-                (b.start_at AT TIME ZONE $4)::date,
-                (b.end_at AT TIME ZONE $4)::date,
-                '[]'
-              ) @> (timezone($4, now()))::date
-            )
-          )
+          AND b.status::text NOT IN ('CANCELLED', 'NO_SHOW')
+          AND daterange(
+            (b.start_at AT TIME ZONE $3)::date,
+            (b.end_at AT TIME ZONE $3)::date,
+            '[]'
+          ) @> COALESCE($4::date, (timezone($3, now()))::date)
         ORDER BY
           CASE WHEN b.status::text = ANY($1::text[]) THEN 0 ELSE 1 END,
           b.start_at
       `,
-      [IN_HOUSE, CARETAKER_BOOKING_TYPES, ARRIVAL_STATUSES, BUSINESS_TZ]
+      [IN_HOUSE, CARETAKER_BOOKING_TYPES, BUSINESS_TZ, selectedDate]
     );
 
     const pets = [];
-    for (const row of result.rows) {
-      const logs = await query(
-        `
-          SELECT
-            cl.care_log_id AS id,
-            ${LOG_TYPE_SQL} AS type,
-            cl.description,
-            COALESCE(cl.occurred_at, cl.created_at) AS created_at
-          FROM care_logs cl
-          LEFT JOIN lodgings l ON l.lodging_id = cl.lodging_id
-          WHERE cl.pet_id = $1 OR l.booking_id = $2
-          ORDER BY COALESCE(cl.occurred_at, cl.created_at) DESC
-          LIMIT 20
-        `,
-        [row.pet_id, row.booking_id]
-      );
-      pets.push({ ...row, logs: logs.rows });
+    for (const row of result.rows || []) {
+      try {
+        const logs = await query(
+          `
+            SELECT
+              cl.care_log_id AS id,
+              ${LOG_TYPE_SQL} AS type,
+              cl.description,
+              cl.photo_url,
+              COALESCE(cl.occurred_at, cl.created_at) AS created_at
+            FROM care_logs cl
+            LEFT JOIN lodgings l ON l.lodging_id = cl.lodging_id
+            WHERE cl.pet_id = $1 OR l.booking_id = $2
+            ORDER BY COALESCE(cl.occurred_at, cl.created_at) DESC
+            LIMIT 20
+          `,
+          [row.pet_id, row.booking_id]
+        );
+        pets.push({ ...row, logs: logs.rows || [] });
+      } catch (logError) {
+        console.error('Error al cargar bitácora de mascota:', logError.message);
+        pets.push({ ...row, logs: [] });
+      }
     }
 
-    return res.status(200).json({ pets });
+    return res.status(200).json({ pets, date: selectedDate });
   } catch (error) {
     console.error('Error en getHousedPets:', error);
-    return res.status(500).json({ message: 'No se pudieron listar las mascotas hospedadas' });
+    return res.status(500).json({ message: 'No se pudieron listar las mascotas hospedadas', pets: [] });
   }
 };
 

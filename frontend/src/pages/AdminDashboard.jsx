@@ -6,6 +6,8 @@ import LiveAvailability, {
   overlayLodgingOccupancy,
   splitLiveSpaces,
 } from '../components/LiveAvailability';
+import PanelSkeleton from '../components/PanelSkeleton';
+import { asArray, requestErrorMessage } from '../lib/safeData';
 import { spacesMatchingService } from '../data/spacesData';
 
 const tabs = [
@@ -148,16 +150,16 @@ function AdminDashboard() {
       const failed = [metricsRes, bookingsRes, occupancyRes, staffRes, clientsRes, servicesRes, spacesRes, categoriesRes]
         .find((result) => result.status === 'rejected');
 
-      const nextBookings = valueOf(bookingsRes)?.bookings || [];
-      const nextServices = valueOf(servicesRes)?.services || [];
+      const nextBookings = asArray(valueOf(bookingsRes)?.bookings);
+      const nextServices = asArray(valueOf(servicesRes)?.services);
       setMetrics(valueOf(metricsRes));
       setBookings(nextBookings);
-      setLiveSpaces(valueOf(occupancyRes)?.spaces || valueOf(spacesRes)?.spaces || []);
-      setStaff(valueOf(staffRes)?.users || []);
-      setClients(valueOf(clientsRes)?.users || []);
+      setLiveSpaces(asArray(valueOf(occupancyRes)?.spaces || valueOf(spacesRes)?.spaces));
+      setStaff(asArray(valueOf(staffRes)?.users));
+      setClients(asArray(valueOf(clientsRes)?.users));
       setServices(nextServices);
-      setSpaces(valueOf(spacesRes)?.spaces || []);
-      setCategories(valueOf(categoriesRes)?.categories || []);
+      setSpaces(asArray(valueOf(spacesRes)?.spaces));
+      setCategories(asArray(valueOf(categoriesRes)?.categories));
       setSelectedServiceId((current) => {
         if (current && nextServices.some((service) => String(service.service_id) === String(current))) {
           return current;
@@ -170,10 +172,10 @@ function AdminDashboard() {
         )
       );
       if (failed) {
-        setError(failed.reason?.response?.data?.message || 'Algunos datos del panel no se pudieron cargar');
+        setError(requestErrorMessage(failed.reason, 'Algunos datos del panel no se pudieron cargar'));
       }
     } catch (err) {
-      setError(err.response?.data?.message || 'No se pudo cargar el panel de administración');
+      setError(requestErrorMessage(err, 'No se pudo cargar el panel de administración'));
     } finally {
       setLoading(false);
     }
@@ -333,12 +335,17 @@ function AdminDashboard() {
   };
 
   if (loading) {
-    return <p className="text-primary-dark">Cargando panel de administración...</p>;
+    return (
+      <section>
+        <h1 className="mb-4 text-3xl font-semibold text-primary-dark">Panel Admin</h1>
+        <PanelSkeleton label="Cargando panel de administración..." />
+      </section>
+    );
   }
 
   const occupiedSpaces = overlayLodgingOccupancy(
-    liveSpaces,
-    bookings.filter((booking) => ['IN_HOUSE', 'CHECKED_IN', 'IN_PROGRESS'].includes(booking.status))
+    asArray(liveSpaces),
+    asArray(bookings).filter((booking) => ['IN_HOUSE', 'CHECKED_IN', 'IN_PROGRESS'].includes(booking?.status))
   );
   const live = splitLiveSpaces(occupiedSpaces);
   const occupancyPercentage = Math.round((live.occupiedLodging / LODGING_CAPACITY) * 100);

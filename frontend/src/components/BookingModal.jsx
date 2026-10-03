@@ -97,7 +97,7 @@ function BookingModal({ open, clients = [], occupancySpaces = [], onClose, onCre
         }
         return type === 'DOG_SUITE' || (type === 'ROOM' && /^Suite Canina/i.test(name));
       });
-      return suites.filter((space) => !space.occupied);
+      return suites;
     }
     if (flow === 'recreation') {
       const patios = spaces.filter((space) => String(space.space_type || '').toUpperCase() === 'RECREATION');
@@ -105,7 +105,7 @@ function BookingModal({ open, clients = [], occupancySpaces = [], onClose, onCre
         const name = String(space.name || '').toLowerCase();
         return isCatSpecies(petSpecies) ? /felin|gat/.test(name) : /canin|perro|dog/.test(name) || !/felin|gat/.test(name);
       });
-      return (bySpecies.length ? bySpecies : patios).filter((space) => Number(space.occupied_count || 0) < Number(space.capacity || 3));
+      return bySpecies.length ? bySpecies : patios;
     }
     return spaStation ? [spaStation] : [];
   }, [flow, petSpecies, spaStation, spaces]);
@@ -258,6 +258,7 @@ function BookingModal({ open, clients = [], occupancySpaces = [], onClose, onCre
                 {filteredSpaces.map((space) => (
                   <option key={space.space_id} value={space.space_id}>
                     {space.name}
+                    {space.occupied ? ' · ocupada ahora' : ''}
                   </option>
                 ))}
               </select>
@@ -299,6 +300,9 @@ function BookingModal({ open, clients = [], occupancySpaces = [], onClose, onCre
                 {filteredSpaces.map((space) => (
                   <option key={space.space_id} value={space.space_id}>
                     {space.name}
+                    {Number(space.occupied_count || 0) > 0
+                      ? ` · ${space.occupied_count}/${space.capacity || 3} ahora`
+                      : ''}
                   </option>
                 ))}
               </select>
@@ -312,6 +316,9 @@ function BookingModal({ open, clients = [], occupancySpaces = [], onClose, onCre
                 value={form.appointment_at}
                 onChange={(event) => setForm((current) => ({ ...current, appointment_at: event.target.value }))}
               />
+              <span className="mt-1 block text-xs font-normal text-primary-dark/60">
+                El cliente puede tener más de una reserva el mismo día; solo se rechaza si el patio está lleno en ese horario.
+              </span>
             </label>
           </div>
         ) : null}
@@ -330,6 +337,9 @@ function BookingModal({ open, clients = [], occupancySpaces = [], onClose, onCre
                 value={form.appointment_at}
                 onChange={(event) => setForm((current) => ({ ...current, appointment_at: event.target.value }))}
               />
+              <span className="mt-1 block text-xs font-normal text-primary-dark/60">
+                Puedes agendar varias citas el mismo día si no se cruzan en horario con el espacio, el estilista o la misma mascota.
+              </span>
             </label>
           </div>
         ) : null}

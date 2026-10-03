@@ -99,6 +99,92 @@ const overlappingFilter = `
   AND ($4::bigint IS NULL OR b.booking_id <> $4)
 `;
 
+const ACTIVE_TIME_STATUSES = CAPACITY_STATUSES;
+const BUSINESS_TZ = 'America/Bogota';
+
+const assertWithinBusinessHours = async (executor, startAt, endAt) => {
+  const window = await executor(
+    `
+      SELECT
+        EXTRACT(DOW FROM $1::timestamptz AT TIME ZONE $3)::int AS dow,
+        ($1::timestamptz AT TIME ZONE $3)::date = ($2::timestamptz AT TIME ZONE $3)::date AS same_day,
+        ($1::timestamptz AT TIME ZONE $3)::time AS start_local,
+        ($2::timestamptz AT TIME ZONE $3)::time AS end_local
+    `,
+    [startAt, endAt, BUSINESS_TZ]
+  );
+  const slot = window.rows[0];
+  if (!slot) {
+    throw new HttpError(400, 'No se pudo validar el horario de atención');
+  }
+  if (!slot.same_day) {
+    throw new HttpError(400, 'La cita debe iniciar y terminar el mismo día de atención');
+  }
+
+  const hours = await executor(
+    `
+      SELECT opens_at, closes_at, is_closed
+      FROM business_hours
+      WHERE day_of_week = $1
+      LIMIT 1
+    `,
+    [slot.dow]
+  );
+  const day = hours.rows[0];
+  if (!day || day.is_closed) {
+    throw new HttpError(400, 'El resort no atiende ese día');
+  }
+  if (slot.start_local < day.opens_at || slot.end_local > day.closes_at) {
+    throw new HttpError(
+      400,
+      `El horario debe estar entre ${String(day.opens_at).slice(0, 5)} y ${String(day.closes_at).slice(0, 5)}`
+    );
+  }
+};
+
+const assertPetTimeAvailable = async (executor, { petId, startAt, endAt, excludeBookingId = null }) => {
+  const result = await executor(
+    `
+      SELECT booking_id
+      FROM bookings b
+      WHERE b.pet_id = $5
+        AND ${overlappingFilter}
+      LIMIT 1
+    `,
+    [startAt, endAt, ACTIVE_TIME_STATUSES, excludeBookingId, petId]
+  );
+  if (result.rowCount) {
+    throw new HttpError(409, 'Esta mascota ya tiene otra reserva que se cruza con ese horario');
+  }
+};
+
+const assertExclusiveSpaceTimeAvailable = async (executor, { spaceId, startAt, endAt, excludeBookingId = null }) => {
+  if (!spaceId) {
+    return;
+  }
+  const space = await executor(
+    `
+      SELECT space_id, name, capacity
+      FROM spaces
+      WHERE space_id = $1
+    `,
+    [spaceId]
+  );
+  const row = space.rows[0];
+  if (!row || Number(row.capacity) > 1) {
+    return;
+  }
+  const used = await countOccupiedOnSpace(executor, {
+    spaceId,
+    startAt,
+    endAt,
+    excludeBookingId,
+  });
+  if (used > 0) {
+    throw new HttpError(409, `${row.name || 'Ese espacio'} ya está ocupado en ese horario`);
+  }
+};
+
 const countLodgingBySpecies = async (executor, { startAt, endAt, species, excludeBookingId = null }) => {
   const wantCat = isCatSpecies(species);
   const result = await executor(
@@ -442,6 +528,31 @@ const ensureBookingSupportTables = async () => {
       WHERE (is_active AND exclusive_slot)
   `);
 
+  await pool.query(`ALTER TABLE pet_resort.bookings DROP CONSTRAINT IF EXISTS ex_owner_booking_day`);
+  await pool.query(`ALTER TABLE pet_resort.bookings DROP CONSTRAINT IF EXISTS ex_owner_active_booking_overlap`);
+  await pool.query(`ALTER TABLE pet_resort.bookings DROP CONSTRAINT IF EXISTS uq_bookings_owner_date`);
+  await pool.query(`DROP INDEX IF EXISTS pet_resort.uq_bookings_owner_date`);
+  await pool.query(`ALTER TABLE pet_resort.bookings DROP CONSTRAINT IF EXISTS ex_pet_active_booking_overlap`);
+  await pool.query(`
+    ALTER TABLE pet_resort.bookings
+      ADD CONSTRAINT ex_pet_active_booking_overlap
+      EXCLUDE USING gist (
+        pet_id WITH =,
+        tstzrange(start_at, end_at, '[)') WITH &&
+      )
+      WHERE (
+        status = ANY (
+          ARRAY[
+            'PENDING'::pet_resort.booking_status,
+            'CONFIRMED'::pet_resort.booking_status,
+            'CHECKED_IN'::pet_resort.booking_status,
+            'IN_HOUSE'::pet_resort.booking_status,
+            'IN_PROGRESS'::pet_resort.booking_status
+          ]
+        )
+      )
+  `);
+
   await pool.query(`
     ALTER TABLE pet_resort.bookings
       ADD COLUMN IF NOT EXISTS assigned_staff_id BIGINT
@@ -769,6 +880,16 @@ const createBooking = async (req, res) => {
       throw new HttpError(400, 'end_at debe ser posterior a start_at');
     }
 
+    if (resolvedType !== 'LODGING') {
+      await assertWithinBusinessHours(client.query.bind(client), start_at, resolvedEndAt);
+    }
+
+    await assertPetTimeAvailable(client.query.bind(client), {
+      petId: pet_id,
+      startAt: start_at,
+      endAt: resolvedEndAt,
+    });
+
     let resolvedSpaceId = space_id || null;
     const capacityArgs = {
       startAt: start_at,
@@ -834,6 +955,12 @@ const createBooking = async (req, res) => {
         throw new HttpError(400, 'El espacio no está disponible');
       }
     }
+
+    await assertExclusiveSpaceTimeAvailable(client.query.bind(client), {
+      spaceId: resolvedSpaceId,
+      startAt: start_at,
+      endAt: resolvedEndAt,
+    });
 
     const assignedStaffId = stylist_id || (await pickDefaultStaffId(client.query.bind(client), resolvedType));
 
@@ -975,8 +1102,14 @@ const createBooking = async (req, res) => {
       return res.status(error.statusCode).json({ message: error.message });
     }
     if (error.code === '23P01') {
+      const constraint = String(error.constraint || '');
+      if (constraint === 'ex_pet_active_booking_overlap') {
+        return res.status(409).json({
+          message: 'Esta mascota ya tiene otra reserva que se cruza con ese horario',
+        });
+      }
       return res.status(409).json({
-        message: 'La mascota o el espacio ya tienen una reserva en ese horario',
+        message: 'El espacio o el profesional ya tienen una reserva en ese horario',
       });
     }
     if (error.code === '23514') {
@@ -1790,7 +1923,7 @@ const rescheduleBooking = async (req, res) => {
     await client.query('BEGIN');
     const current = await client.query(
       `
-        SELECT b.booking_id, b.status, b.booking_type, b.assigned_staff_id, p.species
+        SELECT b.booking_id, b.pet_id, b.status, b.booking_type, b.assigned_staff_id, p.species
         FROM bookings b
         JOIN pets p ON p.pet_id = b.pet_id
         WHERE b.booking_id = $1
@@ -1805,6 +1938,32 @@ const rescheduleBooking = async (req, res) => {
     if (['COMPLETED', 'CANCELLED', 'NO_SHOW'].includes(booking.status)) {
       throw new HttpError(400, `No se puede modificar una reserva en estado ${booking.status}`);
     }
+
+    if (booking.booking_type !== 'LODGING') {
+      await assertWithinBusinessHours(client.query.bind(client), startAt, endAt);
+    }
+    await assertPetTimeAvailable(client.query.bind(client), {
+      petId: booking.pet_id,
+      startAt,
+      endAt,
+      excludeBookingId: bookingId,
+    });
+
+    const occupancy = await client.query(
+      `
+        SELECT space_id
+        FROM space_occupancy
+        WHERE booking_id = $1 AND is_active = true
+        LIMIT 1
+      `,
+      [bookingId]
+    );
+    await assertExclusiveSpaceTimeAvailable(client.query.bind(client), {
+      spaceId: occupancy.rows[0]?.space_id,
+      startAt,
+      endAt,
+      excludeBookingId: bookingId,
+    });
 
     const capacityArgs = {
       startAt,

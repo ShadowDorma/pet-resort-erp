@@ -582,6 +582,9 @@ function Bookings() {
                   onChange={(event) => setAppointmentAt(event.target.value)}
                   className={inputClass}
                 />
+                <span className="font-normal text-xs text-primary-dark/60">
+                  Puedes reservar más de un servicio el mismo día (otra mascota u otro horario) si hay cupo.
+                </span>
               </label>
             )}
             <label className="flex flex-col gap-1 text-sm font-medium text-primary-dark">

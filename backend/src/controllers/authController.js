@@ -5,8 +5,10 @@ const { getClient, query } = require('../config/db');
 const SALT_ROUNDS = 10;
 const TOKEN_EXPIRES_IN = '8h';
 const DEFAULT_ROLE = 'CLIENT';
-const LOGIN_WINDOW_MS = 15 * 60 * 1000;
-const LOGIN_MAX_ATTEMPTS = 20;
+const LOGIN_LOCK_MS = 2 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 5;
+const LOGIN_LOCK_MESSAGE =
+  'Demasiados intentos fallidos. Por razones de seguridad, el inicio de sesión se ha bloqueado temporalmente';
 const loginAttempts = new Map();
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -187,32 +189,55 @@ const register = async (req, res) => {
   }
 };
 
-const tooManyLogins = (req) => {
-  const ip = req.ip || req.headers['x-forwarded-for'] || 'local';
+const loginKey = (req, email) => {
+  const ip = String(req.ip || req.headers['x-forwarded-for'] || 'local')
+    .split(',')[0]
+    .trim();
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  return `${ip}:${normalizedEmail || 'unknown'}`;
+};
+
+const getLoginAttempt = (key) => {
   const now = Date.now();
-  const current = loginAttempts.get(ip) || { count: 0, startedAt: now };
-  if (now - current.startedAt > LOGIN_WINDOW_MS) {
-    current.count = 0;
-    current.startedAt = now;
+  const current = loginAttempts.get(key) || { count: 0, lockedUntil: 0 };
+  if (current.lockedUntil && now >= current.lockedUntil) {
+    loginAttempts.delete(key);
+    return { count: 0, lockedUntil: 0 };
   }
+  return current;
+};
+
+const isLoginLocked = (req, email) => {
+  const current = getLoginAttempt(loginKey(req, email));
+  return current.lockedUntil > Date.now();
+};
+
+const registerFailedLogin = (req, email) => {
+  const key = loginKey(req, email);
+  const current = getLoginAttempt(key);
   current.count += 1;
-  loginAttempts.set(ip, current);
-  return current.count > LOGIN_MAX_ATTEMPTS;
+  if (current.count >= LOGIN_MAX_ATTEMPTS) {
+    current.lockedUntil = Date.now() + LOGIN_LOCK_MS;
+  }
+  loginAttempts.set(key, current);
+  return current;
+};
+
+const clearLoginAttempts = (req, email) => {
+  loginAttempts.delete(loginKey(req, email));
 };
 
 const login = async (req, res) => {
   const { email, password } = req.body || {};
 
-  if (tooManyLogins(req)) {
-    return res.status(429).json({
-      message: 'Demasiados intentos de inicio de sesión. Espera unos minutos.',
-    });
-  }
-
   if (!email || !password) {
     return res.status(400).json({
       message: 'email y password son obligatorios',
     });
+  }
+
+  if (isLoginLocked(req, email)) {
+    return res.status(429).json({ message: LOGIN_LOCK_MESSAGE });
   }
 
   try {
@@ -239,11 +264,19 @@ const login = async (req, res) => {
     const user = result.rows[0];
 
     if (!user) {
+      const attempt = registerFailedLogin(req, email);
+      if (attempt.lockedUntil > Date.now()) {
+        return res.status(429).json({ message: LOGIN_LOCK_MESSAGE });
+      }
       return res.status(401).json({ message: 'Credenciales inválidas' });
     }
 
     const passwordMatch = await bcrypt.compare(password, user.password_hash);
     if (!passwordMatch) {
+      const attempt = registerFailedLogin(req, email);
+      if (attempt.lockedUntil > Date.now()) {
+        return res.status(429).json({ message: LOGIN_LOCK_MESSAGE });
+      }
       return res.status(401).json({ message: 'Credenciales inválidas' });
     }
 
@@ -253,6 +286,8 @@ const login = async (req, res) => {
         status: user.status,
       });
     }
+
+    clearLoginAttempts(req, email);
 
     await query(
       `

@@ -12,21 +12,82 @@ const registerInitial = {
   terms_accepted: true,
 };
 
+const MAX_FAILED_LOGINS = 5;
+const LOGIN_LOCK_MS = 2 * 60 * 1000;
+const LOGIN_LOCK_MESSAGE =
+  'Demasiados intentos fallidos. Por razones de seguridad, el inicio de sesión se ha bloqueado temporalmente';
+const LOGIN_LOCK_STORAGE = 'pet_resort_login_lock';
+
+const readLoginLock = () => {
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem(LOGIN_LOCK_STORAGE) || '{}');
+    return {
+      failedAttempts: Number(parsed.failedAttempts) || 0,
+      lockedUntil: Number(parsed.lockedUntil) || 0,
+    };
+  } catch {
+    return { failedAttempts: 0, lockedUntil: 0 };
+  }
+};
+
+const persistLoginLock = (failedAttempts, lockedUntil) => {
+  sessionStorage.setItem(
+    LOGIN_LOCK_STORAGE,
+    JSON.stringify({ failedAttempts, lockedUntil })
+  );
+};
+
+const remainingLockLabel = (lockedUntil) => {
+  const ms = Math.max(0, lockedUntil - Date.now());
+  const totalSeconds = Math.ceil(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = String(totalSeconds % 60).padStart(2, '0');
+  return `${minutes}:${seconds}`;
+};
+
 function Auth() {
   const { login } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const initialTab = location.pathname === '/register' ? 'register' : 'login';
+  const storedLock = readLoginLock();
 
   const [tab, setTab] = useState(initialTab);
-  const [error, setError] = useState('');
+  const [error, setError] = useState(
+    storedLock.lockedUntil > Date.now() ? LOGIN_LOCK_MESSAGE : ''
+  );
   const [submitting, setSubmitting] = useState(false);
   const [loginForm, setLoginForm] = useState({ email: '', password: '' });
   const [registerForm, setRegisterForm] = useState(registerInitial);
+  const [failedAttempts, setFailedAttempts] = useState(storedLock.failedAttempts);
+  const [lockedUntil, setLockedUntil] = useState(storedLock.lockedUntil);
+  const [now, setNow] = useState(Date.now());
+
+  const loginLocked = lockedUntil > now;
 
   useEffect(() => {
     setTab(location.pathname === '/register' ? 'register' : 'login');
   }, [location.pathname]);
+
+  useEffect(() => {
+    persistLoginLock(failedAttempts, lockedUntil);
+  }, [failedAttempts, lockedUntil]);
+
+  useEffect(() => {
+    if (!lockedUntil) {
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      const current = Date.now();
+      setNow(current);
+      if (current >= lockedUntil) {
+        setFailedAttempts(0);
+        setLockedUntil(0);
+        setError('');
+      }
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [lockedUntil]);
 
   const title = useMemo(
     () => (tab === 'login' ? 'Bienvenido de nuevo' : 'Crea tu cuenta'),
@@ -35,21 +96,52 @@ function Auth() {
 
   const switchTab = (nextTab) => {
     setTab(nextTab);
-    setError('');
+    setError(nextTab === 'login' && lockedUntil > Date.now() ? LOGIN_LOCK_MESSAGE : '');
+  };
+
+  const lockLoginForm = () => {
+    const until = Date.now() + LOGIN_LOCK_MS;
+    setFailedAttempts(MAX_FAILED_LOGINS);
+    setLockedUntil(until);
+    setNow(Date.now());
+    setError(LOGIN_LOCK_MESSAGE);
   };
 
   const handleLogin = async (event) => {
     event.preventDefault();
+    if (lockedUntil > Date.now()) {
+      setError(LOGIN_LOCK_MESSAGE);
+      return;
+    }
+
     setError('');
     setSubmitting(true);
 
     try {
       const { data } = await api.post('/auth/login', loginForm);
+      setFailedAttempts(0);
+      setLockedUntil(0);
+      persistLoginLock(0, 0);
       login(data.token, data.user);
       const from = location.state?.from;
       navigate(typeof from === 'string' && from.startsWith('/') ? from : getHomePath(data.user));
     } catch (err) {
-      setError(err.response?.data?.message || 'Credenciales inválidas');
+      const status = err.response?.status;
+      if (status === 429) {
+        lockLoginForm();
+      } else if (status === 401) {
+        const nextCount = failedAttempts + 1;
+        if (nextCount >= MAX_FAILED_LOGINS) {
+          lockLoginForm();
+        } else {
+          setFailedAttempts(nextCount);
+          setError(
+            `Credenciales inválidas. Intentos fallidos: ${nextCount} de ${MAX_FAILED_LOGINS}.`
+          );
+        }
+      } else {
+        setError(err.response?.data?.message || 'Credenciales inválidas');
+      }
     } finally {
       setSubmitting(false);
     }
@@ -132,11 +224,12 @@ function Auth() {
                 type="email"
                 required
                 autoComplete="email"
+                disabled={loginLocked || submitting}
                 value={loginForm.email}
                 onChange={(event) =>
                   setLoginForm((current) => ({ ...current, email: event.target.value }))
                 }
-                className={inputClass}
+                className={`${inputClass} disabled:cursor-not-allowed disabled:opacity-60`}
               />
             </label>
             <label className="flex flex-col gap-1 text-sm font-medium text-primary-dark">
@@ -145,20 +238,26 @@ function Auth() {
                 type="password"
                 required
                 autoComplete="current-password"
+                disabled={loginLocked || submitting}
                 value={loginForm.password}
                 onChange={(event) =>
                   setLoginForm((current) => ({ ...current, password: event.target.value }))
                 }
-                className={inputClass}
+                className={`${inputClass} disabled:cursor-not-allowed disabled:opacity-60`}
               />
             </label>
             {error ? <p className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+            {loginLocked ? (
+              <p className="text-xs text-primary-dark/70">
+                Tiempo restante de bloqueo: {remainingLockLabel(lockedUntil)}
+              </p>
+            ) : null}
             <button
               type="submit"
-              disabled={submitting}
-              className="rounded-full bg-primary py-2.5 font-medium text-white hover:bg-primary-dark disabled:opacity-70"
+              disabled={submitting || loginLocked}
+              className="rounded-full bg-primary py-2.5 font-medium text-white hover:bg-primary-dark disabled:cursor-not-allowed disabled:opacity-70"
             >
-              {submitting ? 'Ingresando...' : 'Acceder'}
+              {loginLocked ? 'Acceso bloqueado' : submitting ? 'Ingresando...' : 'Acceder'}
             </button>
           </form>
         ) : (
